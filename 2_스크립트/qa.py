@@ -9,17 +9,19 @@ Usage: py qa.py 0709    (run from this folder; arg = MMDD code, e.g. 0709 = July
 import importlib, os, sys, re, io
 from collections import Counter
 from PIL import ImageFont
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
 ZOD = ["쥐","소","호랑이","토끼","용","뱀","말","양","원숭이","닭","개","돼지"]
 
 # ---- physical-line width model (mirrors PNG export) ----
 # slide 7.5in -> 1500px (200 px/in); fortune font 20pt; textbox usable width 5.075in.
 FONT_PX  = 20/72*200          # ~55.56 px
-# Calibrated to ground truth: PowerPoint COM (real font a아시아명조M @20pt, 5.075in box)
-# wraps at KBIZ-proxy width >= 915px. Hard cap set safely below that.
-USABLE   = 915              # px wrap boundary (KBIZ proxy, ground-truth calibrated)
-WIDTH_LIMIT = 905          # px hard cap
+# Calibrated to ground truth: PowerPoint COM (real font a아시아명조M @20pt, 5.075in box).
+# Re-measured 2026-09-11 by writing test strings into the live shape via COM and reading
+# back the autofit-resized shape height: no-wrap confirmed up to 951px, wrap confirmed at
+# 1001px (KBIZ-proxy width). Old 915px boundary was stale/over-conservative (documented
+# false-positive overflow flags on 0907/0914/0831 that never actually wrapped in PowerPoint).
+USABLE   = 950              # px wrap boundary (KBIZ proxy, ground-truth calibrated 2026-09-11)
+WIDTH_LIMIT = 935          # px hard cap
 _FONT_PATH = os.environ.get("FORTUNE_QA_FONT", "C:/Windows/Fonts/KBIZ한마음명조 M.ttf")
 if not os.path.isfile(_FONT_PATH):
     sys.exit(f"폰트를 찾을 수 없습니다: {_FONT_PATH}\n"
@@ -101,59 +103,73 @@ def ecls(line):
 def clen(line):
     return len(re.sub(r"[\.\?\!]+$", "", line.strip()))
 
-date = sys.argv[1]
-# importing a build module triggers prs.save(); QA only needs SUMMARIES -> no-op save.
-import pptx.presentation
-pptx.presentation.Presentation.save = lambda *a, **k: None
-mod = importlib.import_module(f"build_{date}")
-S = mod.SUMMARIES
 COL_MAX, ZOD_MAX = 4, 5   # 열(세로) ≤4, 간지 내부 ≤5 (불가피한 1회 반복 허용)
-problems, overflow = [], []
 
-# HARD: no wrap
-print(f"=== width check (limit {WIDTH_LIMIT}px, boundary {USABLE}px) ===")
-worst = 0
-for z in ZOD:
-    for i,(a,b) in enumerate(S[z],1):
-        for li,l in ((1,a),(2,b)):
-            w = width_px(l)
-            worst = max(worst, w)
-            if w > WIDTH_LIMIT:
-                overflow.append((z,i,li,w,l))
-print(f" widest line = {worst}px ; overflow count = {len(overflow)}")
-for z,i,li,w,l in overflow:
-    print(f"   OVERFLOW {z} slot{i} L{li} {w}px: {l}")
-if overflow:
-    problems.append(f"{len(overflow)} line(s) exceed {WIDTH_LIMIT}px (would wrap)")
+def line_problems(z, line):
+    """Return the existing per-line QA messages without printing them."""
+    problems = []
+    if clen(line) < MIN_CHARS:
+        problems.append(f"{z}: too short ({clen(line)}<{MIN_CHARS}): {line}")
+    for v in qty_unit_violations(line):
+        problems.append(f"{z}: 수량+단위 띄어쓰기 '{v}' → 붙여쓰기 '{v.replace(' ','')}': {line}")
+    for v in boseyo_violations(line):
+        problems.append(f"{z}: 보세요 띄어쓰기 {v}: {line}")
+    if ecls(line) == "는데요":
+        problems.append(f"{z}: ~데요 어미 금지(군요·네요·입니다 등으로 대체): {line}")
+    for b, g in phrase_violations(line):
+        problems.append(f"{z}: 어색한 표현 '{b}…' → '{g}…': {line}")
+    if re.sub(r"[\s]+$", "", line).endswith("?"):
+        problems.append(f"{z}: 물음표 종결 지양(평서문으로): {line}")
+    return problems
 
-# VAR: vertical pattern
-for slot in range(6):
-    for li in range(2):
-        cnt = Counter(ecls(S[z][slot][li]) for z in ZOD)
-        top,n = cnt.most_common(1)[0]
-        if n > COL_MAX:
-            problems.append(f"slot{slot+1} L{li+1}: ending '{top}' x{n} (>{COL_MAX}) across zodiacs")
-# VAR: monotony  + MIN length
-for z in ZOD:
-    lines=[l for p in S[z] for l in p]
-    cnt=Counter(ecls(l) for l in lines)
-    top,n=cnt.most_common(1)[0]
-    if n>ZOD_MAX:
-        problems.append(f"{z}: ending '{top}' x{n} within zodiac (>{ZOD_MAX})")
-    for l in lines:
-        if clen(l) < MIN_CHARS:
-            problems.append(f"{z}: too short ({clen(l)}<{MIN_CHARS}): {l}")
-        for v in qty_unit_violations(l):
-            problems.append(f"{z}: 수량+단위 띄어쓰기 '{v}' → 붙여쓰기 '{v.replace(' ','')}': {l}")
-        for v in boseyo_violations(l):
-            problems.append(f"{z}: 보세요 띄어쓰기 {v}: {l}")
-        if ecls(l) == "는데요":
-            problems.append(f"{z}: ~데요 어미 금지(군요·네요·입니다 등으로 대체): {l}")
-        for b, g in phrase_violations(l):
-            problems.append(f"{z}: 어색한 표현 '{b}…' → '{g}…': {l}")
-        if re.sub(r"[\s]+$", "", l).endswith("?"):
-            problems.append(f"{z}: 물음표 종결 지양(평서문으로): {l}")
+def check(S):
+    """Run the original full QA sequence and return (problems, overflow, worst)."""
+    problems, overflow = [], []
+    worst = 0
+    for z in ZOD:
+        for i,(a,b) in enumerate(S[z],1):
+            for li,l in ((1,a),(2,b)):
+                w = width_px(l)
+                worst = max(worst, w)
+                if w > WIDTH_LIMIT:
+                    overflow.append((z,i,li,w,l))
+    if overflow:
+        problems.append(f"{len(overflow)} line(s) exceed {WIDTH_LIMIT}px (would wrap)")
 
-print("\nRESULT:", "PASS" if not problems else f"FAIL - {len(problems)} issue(s)")
-for p in problems:
-    print("  -", p)
+    for slot in range(6):
+        for li in range(2):
+            cnt = Counter(ecls(S[z][slot][li]) for z in ZOD)
+            top,n = cnt.most_common(1)[0]
+            if n > COL_MAX:
+                problems.append(f"slot{slot+1} L{li+1}: ending '{top}' x{n} (>{COL_MAX}) across zodiacs")
+    for z in ZOD:
+        lines=[l for p in S[z] for l in p]
+        cnt=Counter(ecls(l) for l in lines)
+        top,n=cnt.most_common(1)[0]
+        if n>ZOD_MAX:
+            problems.append(f"{z}: ending '{top}' x{n} within zodiac (>{ZOD_MAX})")
+        for l in lines:
+            problems.extend(line_problems(z, l))
+    return problems, overflow, worst
+
+def main():
+    """Preserve the legacy command-line report while keeping imports side-effect free."""
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+    date = sys.argv[1]
+    # importing a build module triggers prs.save(); QA only needs SUMMARIES -> no-op save.
+    import pptx.presentation
+    pptx.presentation.Presentation.save = lambda *a, **k: None
+    mod = importlib.import_module(f"build_{date}")
+    S = mod.SUMMARIES
+    problems, overflow, worst = check(S)
+
+    print(f"=== width check (limit {WIDTH_LIMIT}px, boundary {USABLE}px) ===")
+    print(f" widest line = {worst}px ; overflow count = {len(overflow)}")
+    for z,i,li,w,l in overflow:
+        print(f"   OVERFLOW {z} slot{i} L{li} {w}px: {l}")
+    print("\nRESULT:", "PASS" if not problems else f"FAIL - {len(problems)} issue(s)")
+    for p in problems:
+        print("  -", p)
+
+if __name__ == "__main__":
+    main()

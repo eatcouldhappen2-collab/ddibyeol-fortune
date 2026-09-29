@@ -13,7 +13,11 @@ __pycache__/
 4_PPTX/
 5_PNG/*
 2_스크립트/build_*.py
+2_스크립트/fortune_memory.json
+2_스크립트/todo_*.txt
+qa/
 
 # 샘플 1일치(0709)는 재포함
 !2_스크립트/build_0709.py
+!2_스크립트/build_common.py
 !5_PNG/0709_png/
