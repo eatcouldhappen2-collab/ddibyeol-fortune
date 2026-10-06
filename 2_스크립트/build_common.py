@@ -7,7 +7,7 @@ import os
 from pptx import Presentation
 
 _BASE = os.path.dirname(os.path.abspath(__file__))
-_TPL = os.path.join(_BASE, "..", "3_템플릿", "0511.pptx")
+_TPL = os.path.join(_BASE, "..", "3_템플릿", "0511_flat.pptx")
 _DEFAULT_OUT = os.path.join(_BASE, "..", "4_PPTX")
 
 SLIDE_ZODIAC = {
