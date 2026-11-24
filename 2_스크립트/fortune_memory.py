@@ -8,6 +8,7 @@ import argparse
 import ast
 import datetime as dt
 import json
+import os
 import re
 from pathlib import Path
 
@@ -18,6 +19,7 @@ import qa
 BASE = Path(__file__).resolve().parent
 PPTX_DIR = BASE.parent / "4_PPTX"
 MEMORY_PATH = BASE / "fortune_memory.json"
+CORRECTIONS_PATH = BASE / "fortune_corrections.json"
 ZOD = ["쥐", "소", "호랑이", "토끼", "용", "뱀", "말", "양", "원숭이", "닭", "개", "돼지"]
 WEEKDAYS = "월화수목금토일"
 SLOT_RE = re.compile(r"^\s*slot([1-6])\s+[^:]*:\s*(.*)$")
@@ -148,7 +150,9 @@ def source_files():
 
 
 def save_memory(memory):
-    MEMORY_PATH.write_text(json.dumps(memory, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    tmp = MEMORY_PATH.with_name(MEMORY_PATH.name + ".tmp")
+    tmp.write_text(json.dumps(memory, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    os.replace(tmp, MEMORY_PATH)
 
 
 def load_memory():
@@ -164,6 +168,65 @@ def load_memory():
     return value
 
 
+def load_corrections():
+    """Load the corrections ledger, returning an empty list when it is absent."""
+    if not CORRECTIONS_PATH.is_file():
+        return []
+    try:
+        value = json.loads(CORRECTIONS_PATH.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"교정 원장을 읽을 수 없습니다: {exc}") from exc
+    if not isinstance(value, dict) or value.get("version") != 1 or not isinstance(value.get("corrections"), list):
+        raise ValueError("교정 원장 형식이 올바르지 않습니다")
+    for item in value["corrections"]:
+        if (not isinstance(item, dict) or any(name not in item for name in ("key", "old", "new"))
+                or not isinstance(item["key"], str)):
+            raise ValueError("교정 원장 형식이 올바르지 않습니다")
+        for pair in (item["old"], item["new"]):
+            if not (isinstance(pair, list) and len(pair) == 2 and all(isinstance(line, str) for line in pair)):
+                raise ValueError("교정 원장 형식이 올바르지 않습니다")
+    return value["corrections"]
+
+
+def apply_corrections(final_entries, corrections):
+    """Apply each ledger correction once to original lines, without cascading."""
+    applied = 0
+    original, touched, seen_keys = {}, [], set()
+    for correction in corrections:
+        item = final_entries.get(correction["key"])
+        if not item:
+            continue
+        key = correction["key"]
+        if key not in seen_keys:
+            seen_keys.add(key)
+            touched.append(key)
+            for variant in item["variants"]:
+                original[id(variant)] = (variant["l1"], variant["l2"])
+        old_pair = tuple(correction["old"])
+        new_l1, new_l2 = correction["new"]
+        for variant in item["variants"]:
+            # Match the pre-correction pair so a rewritten line cannot feed the next row.
+            if original.get(id(variant)) != old_pair:
+                continue
+            original[id(variant)] = None
+            variant["l1"] = new_l1
+            variant["l2"] = new_l2
+            variant["edited"] = True  # A ledger correction is a reviewed, approved sentence.
+            applied += 1
+    for key in touched:
+        item = final_entries[key]
+        seen, kept = set(), []
+        for variant in item["variants"]:
+            pair = (variant["l1"], variant["l2"])
+            if pair in seen:
+                continue
+            seen.add(pair)
+            kept.append(variant)
+        # Keep the earlier variant so edited-first, newest-date order survives.
+        item["variants"] = kept
+    return applied
+
+
 def approved_variant(draft, approved, zodiac, slot):
     """Return whether an approved pair differs from the matching source build draft."""
     if not draft:
@@ -175,9 +238,49 @@ def approved_variant(draft, approved, zodiac, slot):
         return False
 
 
+def merge_existing(entries, existing_entries, replaced):
+    """Keep variants whose (date, zodiac) was not re-harvested, merging sentences already collected."""
+    preserved = 0
+    for key, item in existing_entries.items():
+        if (not isinstance(item, dict) or not isinstance(item.get("source"), str)
+                or not isinstance(item.get("variants"), list)):
+            raise ValueError(f"메모리 파일 형식이 올바르지 않습니다: {key[:20]}")
+        for variant in item["variants"]:
+            if (not isinstance(variant, dict) or not isinstance(variant.get("l1"), str)
+                    or not isinstance(variant.get("l2"), str) or not isinstance(variant.get("date"), str)
+                    or not isinstance(variant.get("zodiac"), str) or not isinstance(variant.get("edited"), bool)):
+                raise ValueError(f"메모리 파일 형식이 올바르지 않습니다: {key[:20]}")
+            if (variant["date"], variant["zodiac"]) in replaced:
+                # This date and zodiac are harvested again, so only carry edited onto the same new sentence.
+                target = entries.get(key)
+                if target is not None:
+                    text_key = normalized(variant["l1"] + variant["l2"])
+                    current = target["variants"].get(text_key)
+                    if current is not None:
+                        current["edited"] = current["edited"] or variant["edited"]
+                continue
+            target = entries.setdefault(key, {"source": item["source"], "variants": {}})
+            text_key = normalized(variant["l1"] + variant["l2"])
+            current = target["variants"].get(text_key)
+            if current is None:
+                target["variants"][text_key] = dict(variant)
+                preserved += 1
+                continue
+            # A newer date wins. The same date keeps the fresh harvest and only ORs edited.
+            if variant["date"] > current["date"]:
+                chosen = dict(variant)
+            else:
+                chosen = current
+            chosen["edited"] = current["edited"] or variant["edited"]
+            target["variants"][text_key] = chosen
+    return preserved
+
+
 def harvest():
-    """Rebuild fortune_memory.json from every source/PPTX pair available today."""
+    """Merge today's source/PPTX harvest into fortune_memory.json, preserving variants whose (date, zodiac) was not read."""
+    existing = load_memory()
     entries, warnings, dates = {}, [], set()
+    replaced = set()
     for src_path in source_files():
         try:
             source = parse_source(src_path)
@@ -197,6 +300,7 @@ def harvest():
         for zodiac in ZOD:
             if zodiac not in approved:
                 continue
+            replaced.add((code, zodiac))
             for slot, pair in enumerate(approved[zodiac], start=1):
                 raw = source["sources"][zodiac][slot - 1]
                 key = normalized(raw)
@@ -212,12 +316,15 @@ def harvest():
                     item["variants"][text_key] = current
                 elif edited:
                     old["edited"] = True
+    preserved = merge_existing(entries, existing["entries"], replaced)
     final_entries = {}
     for key, item in entries.items():
         # Stable sorts express the required priority: edited first, then newest date.
         variants = sorted(item["variants"].values(), key=lambda variant: variant["date"], reverse=True)
         variants.sort(key=lambda variant: not variant["edited"])
         final_entries[key] = {"source": item["source"], "variants": variants}
+    corrections = load_corrections()
+    applied = apply_corrections(final_entries, corrections)
     memory = {"version": 1, "entries": final_entries}
     save_memory(memory)
     count = sum(len(item["variants"]) for item in final_entries.values())
@@ -225,6 +332,8 @@ def harvest():
     print(f"수집 날짜: {len(dates)}")
     print(f"엔트리: {len(final_entries)}")
     print(f"변형: {count} (edited {edited})")
+    print(f"보존(pptx 없는 날짜): {preserved}")
+    print(f"교정 원장 적용: {applied}/{len(corrections)}")
     if warnings:
         print("경고:")
         for warning in warnings:

@@ -14,6 +14,7 @@ __pycache__/
 5_PNG/*
 2_스크립트/build_*.py
 2_스크립트/fortune_memory.json
+2_스크립트/fortune_corrections.json
 2_스크립트/todo_*.txt
 qa/
 

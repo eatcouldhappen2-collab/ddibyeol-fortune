@@ -105,6 +105,13 @@ py -X utf8 fortune_memory.py draft 0709
   다른 확정 변형으로 바꿔 맞춘다.
 - 메모리에 없는 칸은 `("", "")` + `# TODO 원문:` 주석으로 남고 `todo_MMDD.txt`에 모인다 — 이 칸과 qa 지적
   줄만 새로 쓴다. 사용자가 pptx를 고칠수록 메모리가 좋아지므로, 새 날짜 작업 전에는 항상 `harvest`부터 한다.
+- `harvest`는 **병합** 방식이다(2026년 11월 24일): 기존 `fortune_memory.json`을 먼저 읽고, `4_PPTX/`에서 이번에
+  실제로 추출한 (날짜, 띠)만 pptx 내용으로 대체하며, pptx를 지운 날짜의 변형은 그대로 보존한다(용량 때문에 pptx를
+  지워도 변환표는 줄지 않는다). 같은 문장은 최신 날짜로 합치고 edited(사람이 고침)는 유지한다. 저장은 임시 파일→교체로
+  원자적이며, 메모리 형식이 깨져 있으면 아무것도 저장하지 않고 멈춘다.
+- 변환표를 직접 교정한 내역은 `fortune_corrections.json`(원문 키 + 옛 2줄 → 새 2줄) 원장에 남기고, `harvest`가 마지막에
+  다시 적용한다(교정 문장은 edited로 올림). pptx에 옛 문장이 남아 있어도 harvest가 오류를 되살리지 않는다. 원장에도
+  원문이 들어 있으므로 저장소에 올리지 않는다.
 - 새 형식 `build_MMDD.py`는 데이터(`COVER`·`SCORES`·`SUMMARIES`)만 담고 실제 채우기는 `build_common.py`가 한다.
   `fortune_memory.json`·`todo_*.txt`에는 원문이 들어 있으므로 저장소에 올리지 않는다(`.gitignore`).
 
