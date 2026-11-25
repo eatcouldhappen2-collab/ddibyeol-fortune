@@ -7,7 +7,8 @@
 - **파이썬은 `py -X utf8`만** 사용한다(`python`/`python3` 금지).
 - 규칙 전문을 이 문서나 다른 곳에 복제하지 않는다 — 항상 PROJECT_GUIDE.md를 정본으로 참조한다.
   규칙을 바꿀 때는 PROJECT_GUIDE.md와 `2_스크립트/qa.py`를 동시에 수정한다.
-- 작업 흐름: `2_스크립트/extract.py`로 원문 추출 → `build_MMDD.py` 작성(SUMMARIES 포함) →
+- 작업 흐름: `2_스크립트/extract.py`로 원문 추출 → `fortune_memory.py harvest` → `fortune_memory.py draft MMDD`로
+  `build_MMDD.py` 조립(빈칸은 `todo_MMDD.txt`만 작성) →
   `py -X utf8 qa.py MMDD`가 `RESULT: PASS`일 때까지 반복 → `build_MMDD.py` 실행 →
   `embed_export.ps1`로 글꼴 임베드 + PNG 내보내기. 순서를 지키지 않으면 글꼴 임베드가 빠질 수 있다
   (PROJECT_GUIDE.md §5 "함정" 참조).
