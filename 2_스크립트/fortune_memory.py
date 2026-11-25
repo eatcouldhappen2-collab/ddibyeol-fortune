@@ -22,6 +22,7 @@ MEMORY_PATH = BASE / "fortune_memory.json"
 CORRECTIONS_PATH = BASE / "fortune_corrections.json"
 ZOD = ["쥐", "소", "호랑이", "토끼", "용", "뱀", "말", "양", "원숭이", "닭", "개", "돼지"]
 WEEKDAYS = "월화수목금토일"
+LEGACY_YEAR = 2026  # Variants harvested before the year field existed all come from 2026.
 SLOT_RE = re.compile(r"^\s*slot([1-6])\s+[^:]*:\s*(.*)$")
 HEADER_RE = re.compile(r"^---\s*(쥐|소|호랑이|토끼|용|뱀|말|양|원숭이|닭|개|돼지)\s*---")
 
@@ -29,6 +30,11 @@ HEADER_RE = re.compile(r"^---\s*(쥐|소|호랑이|토끼|용|뱀|말|양|원숭
 def normalized(text):
     """Return the punctuation-free key used for original text and variants."""
     return re.sub(r"[^0-9A-Za-z가-힣]", "", text)
+
+
+def date_key(variant):
+    """Return a year-aware sort key so January of next year outranks December."""
+    return (variant.get("year", LEGACY_YEAR), variant["date"])
 
 
 def fortune_groups(text_frame):
@@ -248,7 +254,8 @@ def merge_existing(entries, existing_entries, replaced):
         for variant in item["variants"]:
             if (not isinstance(variant, dict) or not isinstance(variant.get("l1"), str)
                     or not isinstance(variant.get("l2"), str) or not isinstance(variant.get("date"), str)
-                    or not isinstance(variant.get("zodiac"), str) or not isinstance(variant.get("edited"), bool)):
+                    or not isinstance(variant.get("zodiac"), str) or not isinstance(variant.get("edited"), bool)
+                    or not isinstance(variant.get("year", LEGACY_YEAR), int)):
                 raise ValueError(f"메모리 파일 형식이 올바르지 않습니다: {key[:20]}")
             if (variant["date"], variant["zodiac"]) in replaced:
                 # This date and zodiac are harvested again, so only carry edited onto the same new sentence.
@@ -267,7 +274,7 @@ def merge_existing(entries, existing_entries, replaced):
                 preserved += 1
                 continue
             # A newer date wins. The same date keeps the fresh harvest and only ORs edited.
-            if variant["date"] > current["date"]:
+            if date_key(variant) > date_key(current):
                 chosen = dict(variant)
             else:
                 chosen = current
@@ -308,9 +315,9 @@ def harvest():
                 item = entries.setdefault(key, {"source": raw, "variants": {}})
                 edited = approved_variant(draft, pair, zodiac, slot)
                 old = item["variants"].get(text_key)
-                current = {"l1": pair[0], "l2": pair[1], "date": code,
+                current = {"l1": pair[0], "l2": pair[1], "date": code, "year": source["year"],
                            "zodiac": zodiac, "slot": slot, "edited": edited}
-                if old is None or code >= old["date"]:
+                if old is None or date_key(current) >= date_key(old):
                     if old is not None:
                         current["edited"] = old["edited"] or edited
                     item["variants"][text_key] = current
@@ -320,7 +327,7 @@ def harvest():
     final_entries = {}
     for key, item in entries.items():
         # Stable sorts express the required priority: edited first, then newest date.
-        variants = sorted(item["variants"].values(), key=lambda variant: variant["date"], reverse=True)
+        variants = sorted(item["variants"].values(), key=date_key, reverse=True)
         variants.sort(key=lambda variant: not variant["edited"])
         final_entries[key] = {"source": item["source"], "variants": variants}
     corrections = load_corrections()
