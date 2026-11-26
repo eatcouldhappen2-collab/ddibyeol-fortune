@@ -41,9 +41,10 @@ _QU = re.compile(rf"(?<![가-힣])({_QTY})\s+({_UNIT})(?=[을를이가은는에�
 def qty_unit_violations(line):
     return [m.group(0) for m in _QU.finditer(line)]
 
-# ---- house style: auxiliary '보세요' spacing by preceding-word length ----
+# ---- house style: auxiliary '보세요'/'봐요' spacing by preceding-word length ----
 # 앞말 2글자 이하 -> 붙임('먹어보세요'); 3글자 이상 -> 띔('건드려 보세요').
 # Only applies to auxiliary 보다 (앞말 = ~아/어/여 connective form, open syllable).
+# '봐요'는 3글자 이하 -> 붙임, 4글자 이상 -> 띔; 합쇼체(~니다)는 해요체로 통일.
 _CONN_MED = {0,1,3,4,5,6,9,10,14,15}   # ㅏㅐㅒㅓㅔㅕㅘㅙㅝㅞ
 def _is_conn(ch):
     if not ("가" <= ch <= "힣"): return False
@@ -82,6 +83,42 @@ def boseyo_violations(line):
                 out.append(f"'{run}보세요' → 띄어쓰기 '{run} 보세요'")
     return out
 
+_BWAYO_MAIN_VERBS = {"손해", "피해", "이익", "이득", "덕", "재미", "득", "효과", "덕분"}
+# '나'로 끝나는 연결형 동사(떠나 봐요 등)는 추측 어미 '-나 봐요'가 아니므로 예외에서 뺀다.
+_NA_STEMS = ("떠나", "일어나", "벗어나", "나타나", "지나", "태어나", "살아나", "빠져나")
+def _bwayo_exception(tok):
+    if tok in _BWAYO_MAIN_VERBS:
+        return True
+    if tok[-1] == "나":
+        return not tok.endswith(_NA_STEMS)
+    if len(tok) >= 2 and tok[-1] in "가까" and "가" <= tok[-2] <= "힣":
+        # 추측 'ㄴ가'(인가·은가) / 'ㄹ까'(할까): 앞 음절 받침 ㄴ(4) / ㄹ(8)
+        return (ord(tok[-2]) - 0xAC00) % 28 == (4 if tok[-1] == "가" else 8)
+    return False
+
+def bwayo_violations(line):
+    out = []
+    for m in re.finditer(r"봐요(?=[^가-힣]|$)", line):
+        i = m.start()
+        if i == 0: continue
+        before = line[:i]
+        if before.endswith(" "):
+            toks = before.split()
+            if toks and not _bwayo_exception(toks[-1]) and _is_conn(toks[-1][-1]) and len(toks[-1]) <= 3:
+                out.append(f"'{toks[-1]} 봐요' → 붙여쓰기 '{toks[-1]}봐요'")
+        else:
+            k, run = i - 1, ""
+            while k >= 0 and "가" <= line[k] <= "힣":
+                run = line[k] + run; k -= 1
+            if run and not _bwayo_exception(run) and _is_conn(run[-1]) and len(run) >= 4:
+                out.append(f"'{run}봐요' → 띄어쓰기 '{run} 봐요'")
+    return out
+
+def formal_violations(line):
+    # 합쇼체 '~ㅂ니다/습니다': '니다' 앞 글자가 ㅂ받침(입·합·답·습…). '아니다' 같은 낱말은 제외.
+    return any((ord(m.group(1)) - 0xAC00) % 28 == 17
+               for m in re.finditer(r"([가-힣])니다(?![가-힣])", line))
+
 PATTERNS = [
     ("겠어요", r"겠어요$"), ("겠네요", r"겠네요$"),
     ("거예요", r"(거예요|거에요|꺼예요)$"),
@@ -114,8 +151,12 @@ def line_problems(z, line):
         problems.append(f"{z}: 수량+단위 띄어쓰기 '{v}' → 붙여쓰기 '{v.replace(' ','')}': {line}")
     for v in boseyo_violations(line):
         problems.append(f"{z}: 보세요 띄어쓰기 {v}: {line}")
+    for v in bwayo_violations(line):
+        problems.append(f"{z}: 봐요 띄어쓰기 {v}: {line}")
+    if formal_violations(line):
+        problems.append(f"{z}: 합쇼체(~니다) 금지, 해요체로: {line}")
     if ecls(line) == "는데요":
-        problems.append(f"{z}: ~데요 어미 금지(군요·네요·입니다 등으로 대체): {line}")
+        problems.append(f"{z}: ~데요 어미 금지(군요·네요·이에요 등으로 대체): {line}")
     for b, g in phrase_violations(line):
         problems.append(f"{z}: 어색한 표현 '{b}…' → '{g}…': {line}")
     if re.sub(r"[\s]+$", "", line).endswith("?"):
